@@ -13,10 +13,7 @@
     "show_settings": "toolbar",
     "drag_and_drop": true,
     "copy_paste": false,
-    "ffmpeg_args": [
-        "-threads", "0",
-        "-still-picture", "1"
-    ],
+    "magick_args": [],
     "filename_pattern_num": 0,
     "tooltip_duration_seconds": 5,
     "preserve_original_filenames": true,
