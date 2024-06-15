@@ -5,6 +5,8 @@ import functools
 import subprocess
 from typing import Any
 from typing import AnyStr
+from typing import List  
+
 
 from anki.notes import Note
 from aqt import mw
@@ -61,7 +63,7 @@ def support_exe_suffix() -> str:
 def get_bundled_executable(name: str) -> str:
     """
     Get path to executable in the bundled "support" folder.
-    Used to provide 'cwebp' on computers where it is not installed system-wide or can't be found.
+    Used to provide 'magick' on computers where it is not installed system-wide or can't be found.
     """
     path_to_exe = os.path.join(SUPPORT_DIR, name) + support_exe_suffix()
     assert os.path.isfile(path_to_exe), f"{path_to_exe} doesn't exist. Can't recover."
@@ -71,9 +73,8 @@ def get_bundled_executable(name: str) -> str:
 
 
 @functools.cache
-def find_cwebp_exe() -> str:
-    # https://developers.google.com/speed/webp/download
-    return find_executable_ajt("cwebp") or get_bundled_executable("cwebp")
+def find_magick_exe() -> str:
+    return find_executable_ajt("magick") or get_bundled_executable("magick")
 
 
 def stringify_args(args: list[Any]) -> list[str]:
@@ -90,7 +91,7 @@ def fetch_filename(mime: QMimeData) -> Optional[str]:
             return base
 
 
-class WebPConverter:
+class ImageConverter:
     def __init__(
             self,
             parent: Union[QWidget, Editor],
@@ -172,24 +173,41 @@ class WebPConverter:
             return dlg.exec()
         return QDialog.DialogCode.Accepted
 
-    def _get_resize_args(self) -> list[Union[str, int]]:
+    def _get_resize_args(self) -> List[str]:
+        args = []
         if config['avoid_upscaling'] and smaller_than_requested(self._dimensions):
-            # skip resizing if the image is already smaller than the requested size
-            return []
-
-        if config['image_width'] == 0 and config['image_height'] == 0:
-            # skip resizing if both width and height are set to 0
-            return []
-
-        return ['-resize', config['image_width'], config['image_height']]
-
-    def _to_webp(self, source_path: AnyStr, destination_path: AnyStr) -> bool:
-        args = [find_cwebp_exe(), source_path, '-o', destination_path, '-q', config.get('image_quality')]
-        args.extend(config.get('cwebp_args', []))
+            return args
+        
+        width = config['image_width']
+        height = config['image_height']
+        if width == 0 and height == 0:
+            return args
+        
+        resize_arg = ""
+        if width == 0:
+            resize_arg = f"x{height}"
+        elif height == 0:
+            resize_arg = f"{width}x"
+        else:
+            resize_arg = f"{width}x{height}"
+        
+        if resize_arg:
+            args.extend(['-resize', resize_arg])
+        
+        return args
+    
+    def _convert_image(self, source_path: AnyStr, destination_path: AnyStr) -> bool:
+        image_format = config.get('image_format', 'avif')
+        destination_path = os.path.splitext(destination_path)[0] + f".{image_format}"
+        args = [find_magick_exe(), source_path, '-quality', str(config.get('image_quality'))]
+        
         args.extend(self._get_resize_args())
-
+        
+        args.append(destination_path)
+        args.extend(config.get('magick_args', []))
+    
         p = subprocess.Popen(
-            stringify_args(args),
+            args,
             shell=False,
             bufsize=-1,
             stdout=subprocess.PIPE,
@@ -202,7 +220,7 @@ class WebPConverter:
         stdout, stderr = p.communicate()
 
         if p.wait() != 0:
-            print(f"cwebp failed.")
+            print(f"magick failed.")
             print(f"exit code = {p.returncode}")
             print(stdout)
             return False
@@ -210,7 +228,7 @@ class WebPConverter:
         return True
 
 
-class OnPasteConverter(WebPConverter):
+class OnPasteConverter(ImageConverter):
     """
     Converter used when an image is pasted or dragged from outside.
     """
@@ -223,8 +241,8 @@ class OnPasteConverter(WebPConverter):
             if self._maybe_show_settings() == QDialog.DialogCode.Rejected:
                 raise CanceledPaste("Cancelled.")
 
-            if self._to_webp(tmp_file, self._set_output_filepath()) is False:
-                raise RuntimeError("cwebp failed")
+            if self._convert_image(tmp_file, self._set_output_filepath()) is False:
+                raise RuntimeError("magick failed")
 
     def _save_image(self, tmp_path: str, mime: QMimeData) -> bool:
         for image in image_candidates(mime):
@@ -247,7 +265,7 @@ class OnPasteConverter(WebPConverter):
         )
 
 
-class InternalFileConverter(WebPConverter):
+class InternalFileConverter(ImageConverter):
     """
     Converter used when converting an image already stored in the collection (e.g. bulk-convert).
     """
@@ -261,8 +279,8 @@ class InternalFileConverter(WebPConverter):
     def convert_internal(self) -> None:
         if not self._original_filename:
             raise ImageNotLoaded("file wasn't loaded before converting")
-        if self._to_webp(os.path.join(self.dest_dir, self._original_filename), self._set_output_filepath()) is False:
-            raise RuntimeError("cwebp failed")
+        if self._convert_image(os.path.join(self.dest_dir, self._original_filename), self._set_output_filepath()) is False:
+            raise RuntimeError("magick failed")
 
 
 class OnAddNoteConverter(InternalFileConverter):
@@ -297,4 +315,3 @@ class OnAddNoteConverter(InternalFileConverter):
                 if mw.col.media.have(filename):
                     print(f"Converting file: {filename}")
                     self._convert_and_replace_stored_image(filename)
-
